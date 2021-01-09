@@ -1,0 +1,647 @@
+---
+title: 'Urban vitality and crime: Analysis of London'
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    theme: lumen
+---
+# 1 Introduction & Getting started
+## 1.1 Introduction
+This research proposes an analytical framework — by introducing urban vitality which is an important index for evaluating urban space with POI density and diversity, road network density and population density as four indicators of urban vitality — to confirm that the security of the neighborhood comes from the surveillance of people and shops on the street. In other words, this research proposes a question: 
+**What is the relationship between crime rate and urban vitality?**
+Besides, in order to better analyze and summarize the relationship between crime and urban vitality in space, this research will also use clustering analysis to map how their different levels of relationships are distributed in cities.
+
+## 1.2  Install packages and load libraries
+```{r, include=FALSE, cache=TRUE, message = FALSE}
+library(sp)
+library(sf)
+library(tmap)
+library(tmaptools)
+library(sf)
+library(geojsonio)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+```
+
+```{r, eval = FALSE}
+library(sp)
+library(sf)
+library(tmap)
+library(tmaptools)
+library(sf)
+library(geojsonio)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+```
+
+# 2. Data processing
+This study uses the **geographical boundary** of LSOA and need to process five factors. We choose **1)crime rate** as dependent variable and **urban vitality** as independent variables. There are four factors of urban vitality which are the **2)road network density, 3)POIs density, 4)POIs diversity and 5)population density**.
+
+## 2.1 Geographical boundary 
+London **LSOA** boundary is chosen as the geographical boundary for spatial analysis. Lower Layer Super Output Areas (LSOA) are a geographic hierarchy which contain 4835 geographical boundaries. Import a shapefile of LSOA. 
+You can download the file from <https://data.london.gov.uk/dataset/statistical-gis-boundary-files-london>
+
+```{r, results="hide",cache=TRUE, message = FALSE}
+# Get the London LSOA Boundaries
+LD_LSOA <- st_read(
+  'D:/F_SCUA-UCL/CASA05/workshop_1/statistical-gis-boundaries-london/statistical-gis-boundaries-london/ESRI/LSOA_2011_London_gen_MHW.shp')   #You can change it to your own path
+```
+
+The next step is to calculate the area of each region for further analysis
+```{r, cache=TRUE, message = FALSE}
+# Calculate area
+LD_LSOA_area <- st_area(LD_LSOA)
+LD_LSOA_area <- LD_LSOA_area %>% as.numeric(as.character(LD_LSOA_area))
+
+# Add a colomn of area to LD_LSOA
+LD_LSOA$area<- LD_LSOA_area
+
+# Transform geographic coordinate to 4326
+LD_LSOA <-  LD_LSOA %>%
+  st_transform(4326)
+
+# Remove useless data 
+LD_LSOA <- LD_LSOA %>%
+  select('LSOA11CD', 'LSOA11NM','POPDEN', 'geometry', 'area')
+head(LD_LSOA)
+```
+
+## 2.2 Crime data
+Crime data is collected by data.police.uk <https://data.police.uk>, which provides street-level crime information by month, and broken down by police force and lower layer super output area. 
+There are two police stations in Greater London which are city of London and Metropolitan.
+
+This study uses the London crime data in September 2019 which contains 88195 cases. 
+
+There are two teps to process crime data
+1) Combine datasets into the LOSA boundaries
+2) Calculate crime rate by dividing the total number of crime cases by the local population 
+```{r, cache=TRUE, message = FALSE}
+# Read csv of crime
+Crime_MtroP <- read.csv('D:/F_SCUA-UCL/Final/GIS_Final/data/2019-09/2019-09-metropolitan-street.csv')
+Crime_CityofLD <- read.csv('D:/F_SCUA-UCL/Final/GIS_Final/data/2019-09/2019-09-city-of-london-street.csv')
+
+# Rbind two dataset into the greater London dataset
+Crime_LD <- rbind(Crime_MtroP, Crime_CityofLD)
+
+# Data cleaning
+Crime_LD_Cleaning <- select(Crime_LD, 8:10)
+
+# London Crime of LSOA
+LSOA_Crime <-  Crime_LD_Cleaning %>%
+  group_by(LSOA.code) %>%
+  summarise(n=n())
+
+# Combine crime data to LSOA dataset
+LSOA_Crime <-left_join(LD_LSOA, LSOA_Crime, by=c('LSOA11CD'= 'LSOA.code'))
+
+# Add a column of crime rate
+LSOA_Crime$denpop <- LSOA_Crime$n / LSOA_Crime$POPDEN * LSOA_Crime$area
+
+# plot
+tmap_mode('plot')  
+
+# plot
+tm_shape(LSOA_Crime)+
+  ## boundries
+  tm_borders(col = "grey",alpha = 0.1, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'denpop',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Crime_index')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("right", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("right", "bottom"), text.size = 0.5)   ## bar
+```
+
+## 2.3 Urban vitality
+### 2.3.1 Road network density
+Road network data comes from Open Street Map. Download from <http://download.geofabrik.de/europe/great-britain/england/greater-london.html>. 
+The road density of a region is calculated by dividing the total number of road lengths (meter) by the area of the region (square meter). 
+```{r, cache=TRUE, message = FALSE}
+# Read data
+LD_road <- st_read('D:/F_SCUA-UCL/Final/GIS_Final/data/street/gis_osm_roads_free_1.shp')
+
+# Intersect the road and boundaries
+road_intersect <- LD_road %>%
+  st_join(., LD_LSOA)
+
+# Calculate the length of road in each region
+length <- st_length(road_intersect)
+length <- as.numeric(length)
+road_intersect$length <- length
+
+
+# Calculate the account length of each region
+road_intersect <- road_intersect %>%
+  group_by(LSOA11CD, ) %>%
+  summarise(.,sum(length))
+
+# Remove NA
+road_intersect <- road_intersect%>%
+  filter(LSOA11CD != '')%>%
+  st_drop_geometry()
+
+# Join the road data to LD_LSOA
+LSOA_road_account <- left_join(LD_LSOA, road_intersect, by=c('LSOA11CD'= 'LSOA11CD'))
+
+# Calculate road density
+LSOA_road_account$density <- LSOA_road_account$`sum(length)` / LSOA_road_account$area
+```
+
+```{r, cache=TRUE, message = FALSE}
+# plot
+tm_shape(LSOA_road_account)+
+  ## boundries
+  tm_borders(col = "white",alpha = 0.01, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'density',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Road Density')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("left", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("left", "bottom"), text.size = 0.5)+   ## bar
+  # tm_xlab("Longitude") + tm_ylab("Latitude")  # coordinate
+  tm_layout(title = "a.Density of Road Network(per m2)", 
+            main.title = "", title.size = 0.77)
+```
+
+### 2.3.2 POIs density and diversity
+POI data is the data for September 2019 and downloaded from the digimap (<https://digimap.edina.ac.uk/>, Ordnance Survey > Data Download > Boundary and Location Data). which providing a full range of topographic Ordnance Survey data. There are 353532 points in Greater London. 
+
+1） Process data of POI
+```{r,cache=TRUE, message = FALSE}
+# Read data
+poi <- st_read('D:/F_SCUA-UCL/Final/GIS_Final/data/POI/POI.shp')
+## Data Copyright Note
+## Ordnance Survey Digimap: Licensed Data: © Crown copyright and database rights 2020 Ordnance Survey (100025252). 
+## This material includes data licensed from PointX© Database Right/Copyright 2020.
+
+# Remove useless data 
+poi_LD <- poi %>%
+  select('ref_no', 'name','groupname', 'geographic', 'categoryna', 'classname', 'geometry')
+
+# PLOT Points heat map to view the data
+poi_LD <- poi_LD %>%
+  st_transform(4326) %>% # tranform to same CRS as stations and lines
+  cbind(st_coordinates(.))
+### Add boundaries of borough (LSOA is too small)
+Londonborough <- st_read(
+  'D:/F_SCUA-UCL/CASA05/workshop_1/statistical-gis-boundaries-london/statistical-gis-boundaries-london/ESRI/London_Borough_Excluding_MHW.shp')
+### plot heatmap
+ggplot() +
+  geom_bin2d(data = poi_LD, aes(X, Y), binwidth = c(0.01, 0.01)) + # heatmap of 2d bin counts
+  geom_sf(data = Londonborough, col="white", size=0.001, alpha = 0.01) +
+  theme_tufte() +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(x="", y="")
+```
+Clean data 
+```{r,cache=TRUE, message = FALSE}
+# Remove points outside of London
+poi_LD_clean <- poi_LD %>%
+  filter(geographic == 'Greater London')
+poi_LSOA <- poi_LD_clean %>%
+  st_join(., LD_LSOA)
+```
+
+Step1 Divide the total number of POIs by the area to get the result of POIs density.
+```{r, cache=TRUE, message = FALSE}
+# count points of each LOSA
+poi_count <- poi_LSOA %>%
+  group_by(LSOA11CD) %>%
+  summarise(n=n())
+poi_count <- poi_count %>% 
+  st_drop_geometry()
+
+# add the numbers of points to LOSA (then can calculate density and plot)
+LSOA_POI_account <- left_join(LD_LSOA, poi_count, by=c('LSOA11CD'= 'LSOA11CD'))
+LSOA_POI_account$density <- LSOA_POI_account$n / LSOA_POI_account$area
+```
+
+Plot **POI density**
+```{r, cache=TRUE, message = FALSE}
+tm_shape(LSOA_POI_account)+
+  tm_borders(col = "white",alpha = 0.01, lwd = 0.01)+
+  tm_fill(col = 'density',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'LSOA_POI_account')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("left", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("left", "bottom"), text.size = 0.5)+   ## bar
+  tm_layout(title = "b.Density of Points of Interest (per m2)", 
+            main.title = "", title.size = 0.77) 
+```
+
+Step2 Count all types of POI to get the result of POIs diversity. 
+```{r,cache=TRUE, message = FALSE}
+# Create a 'Richness' metric by 'Group', "Category' and 'Class'
+div_tab <- poi_LSOA %>%
+  st_drop_geometry() %>%
+  group_by(LSOA11CD) %>%
+  summarise(rich_g = n_distinct(groupname),
+            rich_cat = n_distinct(categoryna),
+            rich_cla = n_distinct(classname))
+
+# Merge
+diversity <- LSOA_POI_account %>%
+  merge(., div_tab)
+
+diversity$rich_cla_den <- diversity$rich_cla / diversity$area
+```
+Plot **POI density**
+```{r, cache=TRUE, message = FALSE}
+## plot
+tm_shape(diversity)+
+  ## boundries
+  tm_borders(col = "white",alpha = 0.01, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'rich_cla_den',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'POI_Diversity')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("left", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("left", "bottom"), text.size = 0.5)+   ## bar
+  # tm_xlab("Longitude") + tm_ylab("Latitude")  # coordinate
+  tm_layout(title = "c.Diversity of Points of Interest(per m2)", 
+            main.title = "", title.size = 0.77) 
+```
+
+
+### 2.3.3 Population density
+Data of population will directly use the data from LOSA.
+plot **the population density**. 
+```{r, cache=TRUE, message = FALSE}
+# plot
+tm_shape(LSOA_road_account)+
+  ## boundries
+  tm_borders(col = "white",alpha = 0.01, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'POPDEN',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Road Density')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("left", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("left", "bottom"), text.size = 0.5)+   ## bar
+  # tm_xlab("Longitude") + tm_ylab("Latitude")  # coordinate
+  tm_layout(title = "d. Population Density", 
+            main.title = "", title.size = 0.77) 
+```
+
+# 3. Data Cleaning and Distribution Visualization
+## 3.1 Data cleaning
+1) Use z-score to remove outliers. The results greater than 3 or less than -3 will be cleared.
+```{r, cache=TRUE, message = FALSE}
+# Remove outliers by z-score
+LSOA_Crime$Zscore <- scale(LSOA_Crime$denpop,center = TRUE, scale = TRUE)
+
+LSOA_Crime_cleaning <- LSOA_Crime %>%
+  filter(Zscore < 3) %>%
+  filter(Zscore > -3)
+
+# view the data (whether it is normalize)
+par(mfrow=c(1, 2),pin = c(3,2.5)) 
+boxplot(LSOA_Crime_cleaning$denpop, main="Crime")
+hist(LSOA_Crime_cleaning$denpop, main="Crime")
+
+# make it normalize by log
+LSOA_Crime_cleaning$denpoplog <- log(LSOA_Crime_cleaning$denpop)
+```
+
+2) The data is not normally distributed, use logarithmic to make the data normally distributed. 
+```{r,cache=TRUE, message = FALSE}
+# make it normalize by log
+LSOA_Crime_cleaning$denpoplog <- log(LSOA_Crime_cleaning$denpop)
+
+boxplot(LSOA_Crime_cleaning$denpoplog, main="Crime",col = 'orange')
+Dist <- LSOA_Crime_cleaning %>%
+  ggplot(aes(x=denpoplog)) +
+  geom_histogram(position="identity", 
+                 alpha=0.5, 
+                 bins=15, 
+                 fill="orange", col="black")+
+  geom_vline(aes(xintercept=mean(denpoplog)),
+             color="darkblue",
+             linetype="dashed")+
+  labs(title="log of Crime",
+       x="log of Crime",
+       y="Frequency")+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = 0.5))
+Dist
+# remove outliers by z-score 
+LSOA_Crime_cleaning$Zscorelog <- scale(LSOA_Crime_cleaning$denpoplog,center = TRUE, scale = TRUE)
+
+LSOA_Crime_cleaning <- LSOA_Crime_cleaning %>%
+  filter(Zscorelog < 3) %>%
+  filter(Zscorelog > -3)
+
+## plot
+tm_shape(LSOA_Crime_cleaning)+
+  ## boundries
+  tm_borders(col = "grey",alpha = 0.1, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'denpoplog',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Crime')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("right", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("right", "bottom"), text.size = 0.5)   ## bar
+
+
+```
+
+## 3.2 Distribution Visualization
+```{r,cache=TRUE, message = FALSE}
+# Select POI_density
+Independentdata <- select(LSOA_POI_account, LSOA11CD, density, POPDEN) %>%
+  rename(.,POI_density = density)
+# Select POI_diversity
+POI_diversity <- select(diversity,LSOA11CD,rich_cla_den) %>%
+  st_drop_geometry()
+Independentdata <- left_join(Independentdata, POI_diversity, by=c('LSOA11CD'= 'LSOA11CD'))
+Independentdata <- rename(Independentdata,POI_diversity = rich_cla_den)
+# Select Road_density
+Road_density <- select(LSOA_road_account,LSOA11CD,density) %>%
+  st_drop_geometry()
+Independentdata <- left_join(Independentdata, Road_density, by=c('LSOA11CD'= 'LSOA11CD'))
+Independentdata <-rename(Independentdata, Road_density = density)
+# drop geo inf
+Independentdata <- Independentdata %>%
+  st_drop_geometry()
+```
+
+None of them are Normal distribution so we make them to logarithmic
+```{r, cache=TRUE, message = FALSE}
+#log
+Independentdata$log_POI_density <- log(Independentdata$POI_density)
+Independentdata$log_POI_diversity <- log(Independentdata$POI_diversity)
+Independentdata$log_Road_density <- log(Independentdata$Road_density)
+Independentdata$log_popden <- log(Independentdata$POPDEN)
+
+#combine independent data and dependent data
+##both datasets have POPDEN column so remove one
+Independentdata <- Independentdata %>%
+  select(.,-POPDEN)
+##left join them
+Variables <- left_join(LSOA_Crime_cleaning, Independentdata, by = c('LSOA11CD'= 'LSOA11CD')) 
+Variables <- Variables %>%
+  rename(crime =denpop ,log_crime = denpoplog)
+```
+
+Show the data in boxlot
+```{r, cache=TRUE, message = FALSE}
+par(mfrow=c(2, 5))  # divide graph area in 2 columns
+# The original data
+boxplot(LSOA_Crime_cleaning$denpop, main="Crime",col = 'orange')
+boxplot(Independentdata$POI_density, main="POI_density", col = '#b0c7f0')
+boxplot(Independentdata$POI_diversity, main="POI_diversity",col = '#b0c7f0')
+boxplot(Independentdata$Road_density, main="Road_density", col = '#b0c7f0')
+boxplot(Independentdata$Road_density, main="Poplation_density", col = '#b0c7f0')
+
+#The transformed data
+boxplot(Variables$log_crime, main="Variables", col = 'orange')
+boxplot(Variables$log_POI_density, main="log_POI_density",col = '#b0c7f0')
+boxplot(Variables$log_POI_diversity, main="log_POI_diversity", col = '#b0c7f0')
+boxplot(Variables$log_Road_density, main="log_Road_density", col = '#b0c7f0')
+boxplot(Variables$log_popden, main="log_Poplation_density",col = '#b0c7f0')
+```
+
+Show the data distribution in histgram
+```{r, cache=TRUE, message = FALSE}
+par(mfrow=c(1, 5), pin =c(1,0.7))  # divide graph area in 2 columns
+hist(Variables$log_crime, main="Variables", col = 'orange')
+hist(Variables$log_POI_density, main="log_POI_density",col = '#b0c7f0')
+hist(Variables$log_POI_diversity, main="log_POI_diversity", col = '#b0c7f0')
+hist(Variables$log_Road_density, main="log_Road_density", col = '#b0c7f0')
+hist(Variables$log_popden, main="log_Poplation_density",col = '#b0c7f0')
+```
+
+# 4. Urban vitality calculating
+The calculation of the vitality index uses the same weight to calculate the four indicators. unity-based normalization is used to bring all values into the range [0,1]. After the four indicators are normalized into same rage, the average is calculated to obtain the vitality index. The normalization formula is:
+**x'=  (x- x_min)/(x_max  - x_min )**
+
+```{r, cache=TRUE, message = FALSE}
+#POI density
+minPd <- min(Variables$log_POI_density)
+Pd <- max(Variables$log_POI_density) - min(Variables$log_POI_density)
+pd_norm <-  Variables$log_POI_density - minPd
+Variables$pd_norm <- pd_norm / Pd
+
+#POI diversity
+minPdiv <- min(Variables$log_POI_diversity)
+Pdiv <- max(Variables$log_POI_diversity) - min(Variables$log_POI_diversity)
+pdiv_norm <-  Variables$log_POI_diversity - minPdiv
+Variables$pdiv_norm <- pdiv_norm / Pdiv
+
+#Road density
+minR <- min(Variables$log_Road_density)
+R <- max(Variables$log_Road_density) - min(Variables$log_Road_density)
+r_norm <- Variables$log_Road_density - minR
+Variables$r_norm <- r_norm / R
+
+#Population density
+minPp <- min(Variables$log_popden)
+Pp <- max(Variables$log_popden) - min(Variables$log_popden)
+Pp_norm <- Variables$log_popden - minPp
+Variables$Pp_norm <- Pp_norm / Pp
+
+Variables$vitality <- Variables$pd_norm + Variables$pdiv_norm + Variables$r_norm + Variables$Pp_norm
+Variables$vitality <- Variables$vitality / 4 * 100
+ 
+tm_shape(Variables)+
+  ## boundries
+  tm_borders(col = "grey",alpha = 0.1, lwd = 0.01)+
+  ## fill color
+  tm_fill(col = 'vitality',n = 5,style = 'quantile', palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Urban Vitality')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("right", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("right", "bottom"), text.size = 0.5)   ## bar
+```
+
+Determine whether the normal distribution by histogram
+```{r, cache=TRUE, message = FALSE}
+Vitality_Dist <- Variables %>%
+  ggplot(aes(x=vitality)) +
+  geom_histogram(position="identity", 
+                 alpha=0.5, 
+                 bins=15, 
+                 fill="#b0c7f0", col="black")+
+  geom_vline(aes(xintercept=mean(vitality)),
+             color="darkblue",
+             linetype="dashed")+
+  labs(title="Vitality",
+       x="log_vitality",
+       y="Frequency")+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = 0.5))
+Vitality_Dist
+```
+
+# 5.  Spatial analysis
+## 5.1 Pearson's Correlation Coefficient
+Pearson's correlation coefficient is used to calculate the correlation between crime and urban vitality and the four factors. R and p value can be observed to determine the correlation.
+```{r, cache=TRUE, message = FALSE}
+# Select variables
+corre_variable <- Variables %>%
+  select(., log_crime, vitality, log_POI_density,log_POI_diversity,log_Road_density) %>%
+  st_drop_geometry()
+# Plot it
+library(corrplot)
+cormat <- cor(corre_variable, use="complete.obs", method="pearson")
+corrplot(cormat)
+# Get the result of coefficient
+library(Hmisc)
+res2 <- corre_variable 
+res2 <- dplyr::mutate_all(res2,as.integer)
+res <- rcorr(as.matrix(res2))
+res
+```
+
+## 5.2 Spatially-lagged Regression Model
+### 5.2.1 Space Weight Matrix
+Establish the space weight matrix by the k-nearest neighbours.
+```{r, cache=TRUE, message = FALSE}
+# Calculate the centroids of all Wards in London
+coordsLSOA <- Variables %>%
+  st_centroid()%>%
+  st_geometry()
+
+# Generate a spatial weights matrix 
+library(spdep)
+
+#Nearest neighbours
+knn_LSOA <-coordsLSOA %>%
+  knearneigh(., k=4)
+
+LSOA_knn <- knn_LSOA %>%
+  knn2nb()
+
+LSOA.knn_4_weight <- LSOA_knn %>%
+  nb2listw(., style="C")
+```
+
+```{r,cache=TRUE, message = FALSE}
+library(broom)
+slag_dv_model_knn4 <- lagsarlm(log_crime ~ vitality, 
+                               data = corre_variable, 
+                               nb2listw(LSOA_knn, 
+                                        style="C"), 
+                               method = "eigen")
+
+
+
+#what do the outputs show?
+tidy(slag_dv_model_knn4)
+
+
+glance(slag_dv_model_knn4)
+```
+The p values are all close to 0.00 and less than 0.05, and the results are significant. The regression coefficient of urban vitality is -0.051, which means that urban vitality will have a significant negative impact on the crime rate.
+
+Use the Moran’s I to check the residuals in the spatial lag model.
+```{r, cache=TRUE, message = FALSE}
+#write out the residuals
+modelresiduals <- corre_variable %>%
+  mutate(slag_dv_model_knn_resids = residuals(slag_dv_model_knn4))
+
+KNN4Moran <- modelresiduals %>%
+  dplyr::select(slag_dv_model_knn_resids)%>%
+  pull()%>%
+  moran.test(., LSOA.knn_4_weight)%>%
+  tidy()
+
+KNN4Moran
+```
+The Moran’s I is 0.0176, so there is no exhibiting spatial autocorrelation.
+
+## 5.3 Clustering
+```{r, cache=TRUE, message = FALSE}
+# Select data
+Cluster_data <- corre_variable %>%
+  select(log_crime, vitality)
+
+# translate data into int.
+Cluster_data <- dplyr::mutate_all(Cluster_data,as.integer)
+
+fit <- Cluster_data %>%
+  kmeans(., 3, nstart=50)
+
+# get cluster means
+
+library(tidymodels)
+
+centroid <- tidy(fit)%>%
+  #print the results of the cluster groupings
+  print()%>%
+  dplyr::select(log_crime, vitality)
+
+# Plot the clusters on a graph
+p <- ggplot(Cluster_data,aes(log_crime, vitality))+
+  geom_point(aes(colour=factor(fit$cluster)))+
+  geom_point(data=centroid,aes(denpoplog, vitality), size=7, shape=18)+ theme(legend.position="none")
+
+LD_LSOA_dep <- fit %>% 
+  # 
+  augment(., LSOA_Crime_cleaning)%>%
+  dplyr::select(LSOA11CD, .cluster)%>%
+  #make sure the .cluster column is numeric
+  mutate(across(.cluster, as.numeric))%>%
+  # join the .cluster to our sf layer
+  left_join(LSOA_Crime_cleaning, 
+            .,
+            by = c("LSOA11CD" = "LSOA11CD"))
+
+## make the scatter plot
+Variables$cluster <- LD_LSOA_dep$.cluster
+cluster_scatter <- ggplot(Variables, aes(x=vitality,y=log_crime,color = cluster))+
+  geom_point(aes(colour = cluster))
+cluster_scatter
+
+```
+```{r, cache=TRUE, message = FALSE}
+tm_shape(LD_LSOA_dep)+
+  tm_borders(col = "white",alpha = 0.01, lwd = 0.01)+
+  tm_fill(col = '.cluster',n = 3,breaks=c(1,2,3,4), palette = "YlGnBu",colorNA = "gray",
+          legend.show = TRUE,legend.hist = FALSE,
+          title = 'Cluster')+
+  tm_compass(size = 2.5, text.size = 0.7, type = "arrow", position=c("right", "bottom"))+ #compass
+  tm_scale_bar(width = 0.15, position=c("right", "bottom"), text.size = 0.5)+   ## bar
+  tm_layout(title = "Cluster", 
+            main.title = "", title.size = 0.77) 
+```
+
+The distribution of crime rate and urban vitality has a relatively obvious trend: places with high crime rate and low vitality are more distributed on the edge of the city, and places with low crime rate and high vitality are more distributed in the city center.
+
+# 6. Final comments
+This research discusses the spatial distribution of crime and urban vitality.
+From the results, we can see that:
+
+1) the vitality of the city is related to the crime rate. 
+
+2) Where the urban vitality is high, the crime rate is low. 
+
+3) the distribution of crime rate and urban vitality has a relatively obvious trend: places with high crime rate and low vitality are more distributed on the edge of the city, and places with low crime rate and high vitality are more distributed in the city center.
+
+
+But this study has many limitations:
+
+1) Exploring urban vitality may be more suitable for using street data
+
+2) The calculation of urban vitality can also take a more effective way. This study simply uses the normalization method, but then you can consider different coefficients obtained through correlation analysis to weight calculation.
+
+3) Street accessibility can also be more precise. This research simply uses the data of road network density, and further research can also consider advanced methods such as space syntax.
+
+
+# 7. Feedback
+If you have any feedback or comments please contact me at sihan.chen.20@ucl.ac.uk
+
+
+
+
+
+
+
+
+
+
+
